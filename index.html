@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>理科クイズ！地球破壊オンライン - 強化版</title>
+    <style>
+        :root { --bg-dark: #121214; --panel-bg: #1e1e24; --accent: #ff4757; --text: #ffffff; }
+        body { background: var(--bg-dark); color: var(--text); font-family: sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .card { background: var(--panel-bg); padding: 20px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .hidden { display: none !important; }
+        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        button { background: #3742fa; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; font-size: 16px; transition: 0.2s; }
+        button:hover { background: #535c68; }
+        /* 1000人表示用の高速コンテナ */
+        #rivals-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 5px; max-height: 400px; overflow-y: auto; content-visibility: auto; }
+        .rival-dot { font-size: 11px; padding: 4px; text-align: center; background: #2f3542; border-radius: 3px; border-left: 3px solid #2ed573; }
+        .rival-dot.dead { border-left-color: var(--accent); opacity: 0.5; }
+    </style>
+</head>
+<body>
+
+    <h1>🌎 地球破壊オンライン <span style="font-size:12px; color:#999;">v2.0 (Production Ready)</span></h1>
+
+    <div class="container">
+        <!-- メインゲームエリア -->
+        <div class="card">
+            <!-- 認証画面 -->
+            <div id="view-auth">
+                <h2>アカウント設定</h2>
+                <input type="text" id="input-username" placeholder="ユーザー名" style="padding:10px; width:80%;">
+                <button onclick="GameApp.login()">ゲームに参加</button>
+            </div>
+
+            <!-- ゲームプレイ画面 -->
+            <div id="view-game" class="hidden">
+                <div style="display:flex; justify-content:space-between;">
+                    <h3>プレイヤー: <span id="player-name">-</span></h3>
+                    <h3>コイン: <span id="player-coins">0</span></h3>
+                </div>
+                <div id="quiz-area" class="card" style="background:#2f3542;">
+                    <p id="quiz-question">問題を取得中...</p>
+                    <div id="quiz-options" class="options-grid"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. 1000人対戦用高パフォーマンス・サイドバー -->
+        <div class="card">
+            <h3>対戦ロビー (生存: <span id="alive-count">0</span> / <span id="total-count">0</span>人)</h3>
+            <div id="rivals-list"></div>
+        </div>
+    </div>
+
+    <script>
+        // 2. 状態とUIを分離したアーキテクチャ設計 (State Pattern)
+        const GameApp = {
+            state: {
+                username: "",
+                token: btoa(Math.random().toString()), // クライアント一時識別子
+                coins: 0,
+                quizzes: [],
+                currentQuizIndex: 0,
+                rivals: []
+            },
+
+            async init() {
+                // 初期化時に1000人のダミーデータをメモリ上にモック（描画負荷テスト用）
+                this.state.rivals = Array.from({length: 1000}, (_, i) => ({
+                    id: i, name: `Rival_${i}`, hp: 100, isDead: false
+                }));
+                this.renderRivals();
+            },
+
+            login() {
+                const name = document.getElementById("input-username").value.trim();
+                if (!name) return alert("名前を入力してください");
+                this.state.username = name;
+                
+                document.getElementById("view-auth").classList.add("hidden");
+                document.getElementById("view-game").classList.remove("hidden");
+                document.getElementById("player-name").innerText = name;
+                
+                this.fetchQuizzes();
+            },
+
+            // 4. ハードコードを排除し、API経由でクイズを取得
+            async fetchQuizzes() {
+                try {
+                    const res = await fetch('/api/quiz');
+                    const data = await res.json();
+                    if(data.success) {
+                        this.state.quizzes = data.quizzes;
+                        this.renderQuiz();
+                    }
+                } catch (e) {
+                    console.error("クイズデータの取得に失敗しました", e);
+                }
+            },
+
+            renderQuiz() {
+                const quiz = this.state.quizzes[this.state.currentQuizIndex];
+                if (!quiz) {
+                    document.getElementById("quiz-question").innerText = "すべてのクイズをクリアしました！";
+                    document.getElementById("quiz-options").innerHTML = "";
+                    return;
+                }
+                document.getElementById("quiz-question").innerText = quiz.question;
+                
+                // DOMの一括置換（ベタ書き追加によるスパゲッティ化を防止）
+                const optionsContainer = document.getElementById("quiz-options");
+                optionsContainer.innerHTML = quiz.options.map((opt, idx) => 
+                    `<button onclick="GameApp.submitAnswer(${quiz.id}, ${idx})">${opt}</button>`
+                ).join('');
+            },
+
+            // 1. 重要：正解判定や計算をフロントで行わず、サーバーの検証APIを叩く
+            async submitAnswer(quizId, selectedOption) {
+                try {
+                    const res = await fetch('/api/answer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            quizId,
+                            selectedOption,
+                            userToken: this.state.token
+                        })
+                    });
+                    const result = await res.json();
+
+                    if (result.isCorrect) {
+                        alert(`正解！ 敵に ${result.damageDealt} ダメージ！`);
+                        this.state.coins += result.coinsEarned;
+                        document.getElementById("player-coins").innerText = this.state.coins;
+                        // 1000人のうち数人をランダムに撃破（同期演出シミュレート）
+                        this.simulateRivalDamage(result.damageDealt);
+                    } else {
+                        alert("不正解！");
+                    }
+
+                    // 次の問題へ
+                    this.state.currentQuizIndex = (this.state.currentQuizIndex + 1) % this.state.quizzes.length;
+                    this.renderQuiz();
+
+                } catch (e) {
+                    alert("通信エラーが発生しました。");
+                }
+            },
+
+            // 3. 1000人対戦時のブラウザクラッシュ対策（差分のみ高速更新）
+            renderRivals() {
+                const listContainer = document.getElementById("rivals-list");
+                
+                // 初回のみドキュメントフラグメントを使って超高速にDOMを注入
+                const fragment = document.createDocumentFragment();
+                this.state.rivals.forEach(rival => {
+                    const div = document.createElement('div');
+                    div.id = `rival-${rival.id}`;
+                    div.className = `rival-dot ${rival.isDead ? 'dead' : ''}`;
+                    div.innerText = `${rival.name}`;
+                    fragment.appendChild(div);
+                });
+                listContainer.innerHTML = "";
+                listContainer.appendChild(fragment);
+                
+                this.updateCounts();
+            },
+
+            simulateRivalDamage(damage) {
+                // 1000人のDOMを毎回全部消して作り直すと確実にクラッシュする
+                // よって、ピンポイントで必要な要素のクラスだけを書き換える
+                let affectedCount = 0;
+                this.state.rivals.forEach(rival => {
+                    if (!rival.isDead && Math.random() < 0.15) { // 15%の確率で巻き添え破壊
+                        rival.isDead = true;
+                        affectedCount++;
+                        const el = document.getElementById(`rival-${rival.id}`);
+                        if (el) el.classList.add('dead'); // クラスの変更のみ（超軽量）
+                    }
+                });
+                this.updateCounts();
+            },
+
+            updateCounts() {
+                const total = this.state.rivals.length;
+                const alive = this.state.rivals.filter(r => !r.isDead).length;
+                document.getElementById("alive-count").innerText = alive;
+                document.getElementById("total-count").innerText = total;
+            }
+        };
+
+        window.onload = () => GameApp.init();
+    </script>
+</body>
+</html>
